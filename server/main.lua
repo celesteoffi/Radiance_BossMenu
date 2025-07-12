@@ -1,125 +1,159 @@
 --============================================================--
---  Boss-Menu – SERVER v3.3                                   --
---  • paramètre defaultGrade + salaires appliqués à l’arrivée --
+--  Boss-Menu – SERVER  v3.4-gradeFix                         --
 --============================================================--
 
--------------------------------- ESX -------------------------------
+--------------------------- ESX ---------------------------------
 local ESX
 if pcall(function() ESX = exports['es_extended']:getSharedObject() end) and ESX then
-else AddEventHandler('esx:getSharedObject', function(o) ESX = o end) while ESX==nil do Wait(50) end end
+else AddEventHandler('esx:getSharedObject', function(o) ESX = o end) while not ESX do Wait(50) end end
 
------------------------------- Cache -------------------------------
-local cache = {}          -- { [job] = { grades = {}, invites = {}, default = 'id' } }
+------------------------- Cache ---------------------------------
+-- cache[job] = {grades={}, invites={}, default='id'}
+local cache = {}
 
 MySQL.ready(function()
-  for _,r in ipairs(MySQL.query.await('SELECT * FROM job_grades')) do
-    cache[r.job_name]               = cache[r.job_name] or {grades={},invites={}}
-    cache[r.job_name].grades[tostring(r.grade)] = {label=r.label,salary=r.salary,permissions=json.decode(r.permissions or '{}')}
-  end
-  local defs = MySQL.query.await('SELECT job_name,default_grade FROM bossmenu_defaults')
-  for _,d in ipairs(defs) do
-    cache[d.job_name]               = cache[d.job_name] or {grades={},invites={}}
-    cache[d.job_name].default       = tostring(d.default_grade)
-  end
+    for _,r in ipairs(MySQL.query.await('SELECT * FROM job_grades')) do
+        cache[r.job_name]                = cache[r.job_name] or {grades={},invites={}}
+        cache[r.job_name].grades[tostring(r.grade)] = {
+            label       = r.label,
+            salary      = r.salary,
+            permissions = json.decode(r.permissions or '{}')
+        }
+    end
+    for _,d in ipairs(MySQL.query.await('SELECT job_name,default_grade FROM bossmenu_defaults')) do
+        cache[d.job_name]                = cache[d.job_name] or {grades={},invites={}}
+        cache[d.job_name].default        = tostring(d.default_grade)
+    end
 end)
 
------------------------------- Helpers -----------------------------
+------------------------- Helpers -------------------------------
 local function employees(job)
-  local t={} for _,x in pairs(ESX.GetExtendedPlayers('job',job)) do
-    t[#t+1]={id=x.source,name=x.getName(),grade=x.job.grade,gradeLabel=x.job.grade_label} end
-  return t
+    local out={} for _,x in pairs(ESX.GetExtendedPlayers('job',job)) do
+        out[#out+1] = {id=x.source,name=x.getName(),grade=x.job.grade,gradeLabel=x.job.grade_label}
+    end
+    return out
 end
-local function sendUpdate(job)
-  TriggerClientEvent('bossmenu:updateUI', -1, {
-    jobName   = job,
-    grades    = cache[job].grades,
-    default   = cache[job].default,
-    employees = employees(job)
-  })
-end
-local function hasPerm(p,flag)
-  local cfg=Config.WhitelistedJobs[p.job.name]; if not cfg then return false end
-  if p.job.grade==cfg.bossGrade then return true end
-  local g=cache[p.job.name].grades[tostring(p.job.grade)]
-  return g.permissions and g.permissions[flag]
-end
+local function jobData(job) return {jobName=job,grades=cache[job].grades,default=cache[job].default,employees=employees(job)} end
+local function push(job) TriggerClientEvent('bossmenu:updateUI',-1,jobData(job)) end
 local function safeName(l) return (l:gsub('%s+','_'):gsub('[^%w_]',''):lower():gsub('^$','grade'..math.random(1000,9999))) end
 
---------------------------- Callbacks -----------------------------
-ESX.RegisterServerCallback('bossmenu:canOpen', function(src,cb)
-  local x=ESX.GetPlayerFromId(src);local cfg=Config.WhitelistedJobs[x.job.name]
-  if not cfg then        cb(false,'Job non autorisé.')   return end
+-- admin whitelist : peut gérer n’importe quel job
+local WL={} for _,r in ipairs(MySQL.query.await('SELECT discord_id FROM admin_whitelist')) do WL[r.discord_id]=true end
+local function isAdmin(src) for _,id in ipairs(GetPlayerIdentifiers(src)) do if id:find('discord:') and WL[id] then return true end end end
+
+local function hasPerm(ply, job, flag)
+    if isAdmin(ply.source) and job ~= ply.job.name then return true end
+    local cfg=Config.WhitelistedJobs[job]; if not cfg then return false end
+    if ply.job.name==job and ply.job.grade==cfg.bossGrade then return true end
+    local g=cache[job].grades[tostring(ply.job.grade)]
+    return g and g.permissions and g.permissions[flag]
+end
+
+----------------------- Callbacks -------------------------------
+ESX.RegisterServerCallback('bossmenu:canOpen',function(src,cb,forced)
+  if forced then cb(true) return end
+  local x=ESX.GetPlayerFromId(src); local cfg=Config.WhitelistedJobs[x.job.name]
+  if not cfg then cb(false,'Job non autorisé.') return end
   if x.job.grade==cfg.bossGrade then cb(true) return end
   local g=cache[x.job.name].grades[tostring(x.job.grade)]
   cb(g and g.permissions and g.permissions.manage_grades,'Grade insuffisant.')
 end)
-ESX.RegisterServerCallback('bossmenu:getFullData',function(s,cb)
-  local j=ESX.GetPlayerFromId(s).job.name
-  cb{jobName=j,grades=cache[j].grades,default=cache[j].default,employees=employees(j)}
+
+ESX.RegisterServerCallback('bossmenu:getFullData',function(src,cb,forcedJob)
+  local job = forcedJob or ESX.GetPlayerFromId(src).job.name
+  cb(jobData(job))
 end)
 
------------------------ Création / MAJ grade -----------------------
-RegisterNetEvent('bossmenu:createGrade',function(d)
-  local x=ESX.GetPlayerFromId(source);if not hasPerm(x,'manage_grades')then return end
-  local j=x.job.name;local id=tostring(d.grade)
-  if cache[j].grades[id]then x.showNotification('ID déjà pris.');return end
-  cache[j].grades[id]={label=d.label,salary=d.salary,permissions=d.permissions or {}}
+-- petite fonction utilitaire : quel job manipuler ?
+local function targetJob(src, jobParam)
+  return jobParam or ESX.GetPlayerFromId(src).job.name
+end
+
+----------------------- CRUD Grades ------------------------------
+RegisterNetEvent('bossmenu:createGrade',function(d,job)
+  local x=ESX.GetPlayerFromId(source); job=targetJob(source,job)
+  if not hasPerm(x,job,'manage_grades') then return end
+  local id=tostring(d.grade); if cache[job].grades[id] then return end
+  cache[job].grades[id]={label=d.label,salary=d.salary,permissions=d.permissions or {}}
   MySQL.executeSync('INSERT INTO job_grades (job_name,grade,name,label,salary,permissions) VALUES (?,?,?,?,?,?)',
-    {j,id,safeName(d.label),d.label,d.salary,json.encode(d.permissions or {})})
-  sendUpdate(j)
+    {job,id,safeName(d.label),d.label,d.salary,json.encode(d.permissions or {})})
+  push(job)
 end)
 
-RegisterNetEvent('bossmenu:updateGrade',function(d)
-  local x=ESX.GetPlayerFromId(source);if not hasPerm(x,'manage_grades')then return end
-  local j=x.job.name;local id=tostring(d.grade);local g=cache[j].grades[id]if not g then return end
-  g.salary=d.salary or g.salary;g.label=d.label or g.label;g.permissions=d.permissions or g.permissions
+RegisterNetEvent('bossmenu:updateGrade',function(d,job)
+  local x=ESX.GetPlayerFromId(source); job=targetJob(source,job)
+  if not hasPerm(x,job,'manage_grades') then return end
+  local g=cache[job].grades[tostring(d.grade)]; if not g then return end
+  g.label=d.label or g.label; g.salary=d.salary or g.salary; g.permissions=d.permissions or g.permissions
   MySQL.executeSync('UPDATE job_grades SET label=?,salary=?,permissions=? WHERE job_name=? AND grade=?',
-    {g.label,g.salary,json.encode(g.permissions),j,id})
-  sendUpdate(j)
+    {g.label,g.salary,json.encode(g.permissions),job,tostring(d.grade)})
+  push(job)
 end)
 
-RegisterNetEvent('bossmenu:deleteGrade',function(id)
-  local x=ESX.GetPlayerFromId(source);if not hasPerm(x,'manage_grades')then return end
-  local j=x.job.name;id=tostring(id)
-  if id==cache[j].default then x.showNotification('Définissez d\'abord un autre grade par défaut.');return end
-  if not cache[j].grades[id]then return end
-  for _,e in pairs(employees(j))do if tostring(e.grade)==id then x.showNotification('Des employés ont ce grade.') return end end
-  cache[j].grades[id]=nil
-  MySQL.executeSync('DELETE FROM job_grades WHERE job_name=? AND grade=? LIMIT 1',{j,id})
-  sendUpdate(j)
+RegisterNetEvent('bossmenu:deleteGrade',function(id,job)
+  local x=ESX.GetPlayerFromId(source); job=targetJob(source,job)
+  if not hasPerm(x,job,'manage_grades') then return end
+  id=tostring(id); if id==cache[job].default then return end
+  if employees(job)[1] then for _,e in pairs(employees(job)) do if tostring(e.grade)==id then return end end end
+  cache[job].grades[id]=nil
+  MySQL.executeSync('DELETE FROM job_grades WHERE job_name=? AND grade=? LIMIT 1',{job,id})
+  push(job)
 end)
 
------------------------ Défaut grade -------------------------------
-RegisterNetEvent('bossmenu:setDefaultGrade',function(id)
-  local x=ESX.GetPlayerFromId(source);if not hasPerm(x,'manage_grades')then return end
-  local j=x.job.name;id=tostring(id)
-  if not cache[j].grades[id]then return end
-  cache[j].default=id
-  MySQL.executeSync('REPLACE INTO bossmenu_defaults (job_name,default_grade) VALUES (?,?)',{j,id})
-  sendUpdate(j)
+RegisterNetEvent('bossmenu:setDefaultGrade',function(id,job)
+  local x=ESX.GetPlayerFromId(source); job=targetJob(source,job)
+  if not hasPerm(x,job,'manage_grades') then return end
+  id=tostring(id); if not cache[job].grades[id] then return end
+  cache[job].default=id
+  MySQL.executeSync('REPLACE INTO bossmenu_defaults (job_name,default_grade) VALUES (?,?)',{job,id})
+  push(job)
 end)
 
------------------------ Changer grade employé ----------------------
-RegisterNetEvent('bossmenu:setEmployeeGrade',function(tid,newG)
-  local b=ESX.GetPlayerFromId(source);if not hasPerm(b,'manage_grades')then return end
-  local t=ESX.GetPlayerFromId(tid);newG=tostring(newG)
-  if t and t.source~=b.source and t.job.name==b.job.name and cache[t.job.name].grades[newG]then
-    t.setJob(t.job.name,tonumber(newG)); sendUpdate(t.job.name)
+----------------- Employés & permissions -------------------------
+RegisterNetEvent('bossmenu:setEmployeeGrade', function(d, job)
+  local admin  = ESX.GetPlayerFromId(source)
+  job          = targetJob(source, job)          -- job ouvert dans l’UI
+  local tgt    = ESX.GetPlayerFromId(d.targetId)
+  local grade  = tostring(d.newGrade)
+
+  -- autorisation :
+  --  • admin absolu (whitelist)    OU
+  --  • manage_grades / recruit     sur le job concerné
+  if not (isAdmin(source)
+          or hasPerm(admin, job, 'manage_grades')
+          or hasPerm(admin, job, 'recruit')) then
+      return
+  end
+
+  -- le grade doit exister dans ce job
+  if tgt and cache[job].grades[grade] then
+      tgt.setJob(job, tonumber(grade))
+      push(job)                               -- refresh UI pour tous
   end
 end)
 
------------------------ Recruit / Accept / Kick --------------------
-RegisterNetEvent('bossmenu:invitePlayer',function(t)
-  local b=ESX.GetPlayerFromId(source);if not hasPerm(b,'recruit')then return end
-  cache[b.job.name].invites[t]=true;TriggerClientEvent('esx:showNotification',t,
-   ('Invitation ~b~%s~s~ : /jobaccept'):format(b.job.name))
+RegisterNetEvent('bossmenu:invitePlayer',function(d,job)
+  local b=ESX.GetPlayerFromId(source); job=targetJob(source,job)
+  if not hasPerm(b,job,'recruit') then return end
+  cache[job].invites[d.targetId]=true
+  TriggerClientEvent('esx:showNotification',d.targetId,('Invitation ~b~%s~s~ : /jobaccept'):format(job))
 end)
+
+RegisterNetEvent('bossmenu:kickPlayer',function(d,job)
+  local b=ESX.GetPlayerFromId(source); job=targetJob(source,job)
+  if not hasPerm(b,job,'kick') then return end
+  local tgt=ESX.GetPlayerFromId(d.targetId)
+  if tgt and tgt.job.name==job then tgt.setJob('unemployed',0); push(job) end
+end)
+
 ESX.RegisterCommand('jobaccept','user',function(p)
-  for j,c in pairs(cache)do if c.invites[p.source]then p.setJob(j,tonumber(c.default or 0));c.invites[p.source]=nil;sendUpdate(j) return end end
+  for j,c in pairs(cache) do
+    if c.invites[p.source] then
+      p.setJob(j, tonumber(c.default or 0))
+      c.invites[p.source]=nil
+      push(j)
+      return
+    end
+  end
   p.showNotification('Aucune invitation.')
 end,false)
-RegisterNetEvent('bossmenu:kickPlayer',function(t)
-  local b=ESX.GetPlayerFromId(source);if not hasPerm(b,'kick')then return end
-  local p=ESX.GetPlayerFromId(t)
-  if p and p.source~=b.source and p.job.name==b.job.name then p.setJob('unemployed',0);sendUpdate(b.job.name) end
-end)
