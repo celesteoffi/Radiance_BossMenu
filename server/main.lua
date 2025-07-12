@@ -157,3 +157,21 @@ ESX.RegisterCommand('jobaccept','user',function(p)
   end
   p.showNotification('Aucune invitation.')
 end,false)
+
+------------------------------------------------------------------
+--  Reception d'un nouveau job (créé depuis l'admin-menu)        --
+------------------------------------------------------------------
+RegisterNetEvent('bossmenu:registerNewJob', function(data)
+  local job   = data.name
+  local label = data.label
+  local sal   = data.salary
+  local bossG = tostring(data.bossG)
+
+  cache[job]               = cache[job] or {grades={},invites={},default='0'}
+  cache[job].grades['0']   = {label = label..' Employé', salary = sal,  permissions = {}}
+  cache[job].grades[bossG] = {label = label..' Boss',    salary = sal,  permissions = {manage_grades=true,recruit=true,kick=true}}
+  -- on laisse cache[job].default à "0" (employé)
+
+  -- pousse la mise à jour à tous les joueurs pour ce job
+  push(job)
+end)
