@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Boss-Menu</title>
+
+  <!-- police + css -->
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app" class="card hidden">
+    <h1 class="title">Boss-Menu <small id="jobTitle"></small></h1>
+
+    <!-- ---------- Onglets ---------- -->
+    <div class="tabs">
+      <button data-tab="grades"   class="active">Grades</button>
+      <button data-tab="employees">Employés</button>
+      <button data-tab="perms">Permissions</button>
+      <button data-tab="default">Défaut</button>
+    </div>
+
+    <!-- ---------- Grades ---------- -->
+    <div class="tab grades active">
+      <button id="btnNewGrade" class="button-blue">+ Nouveau grade</button>
+      <table id="gradesTable"></table>
+    </div>
+
+    <!-- ---------- Employés ---------- -->
+    <div class="tab employees">
+      <button id="btnInvite" class="button-blue">Inviter (ID)</button>
+      <table id="empTable"></table>
+    </div>
+
+    <!-- ---------- Permissions ---------- -->
+    <div class="tab perms">
+      <table id="permTable"></table>
+    </div>
+
+    <!-- ---------- Grade par défaut ---------- -->
+    <div class="tab default">
+      <table id="defTable"></table>
+    </div>
+
+    <!-- bouton fermeture -->
+    <button id="btnClose" class="close">×</button>
+  </div>
+
+  <!-- ---------- Modal interne ---------- -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-content">
+      <h2 id="modalTitle"></h2>
+      <div id="modalBody"></div>
+      <div class="modal-actions">
+        <button id="modalCancel" class="btn-grey">Annuler</button>
+        <button id="modalOk"     class="btn-blue">Valider</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- script -->
+  <script src="app.js"></script>
+</body>
+</html>
